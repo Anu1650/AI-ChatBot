@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Chatbot</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body {
+      background: #0d1117;
+      color: #f0f6fc;
+      font-family: 'Segoe UI', sans-serif;
+    }
+    .chat-container {
+      max-width: 800px;
+      margin: 40px auto;
+      background: #161b22;
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 0 15px rgba(0,0,0,0.5);
+      height: 80vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .chat-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 15px;
+    }
+    .chat-header h1 {
+      margin: 0;
+      font-size: 28px;
+      color: #58a6ff;
+    }
+    .chat-header p {
+      margin: 0;
+      color: #8b949e;
+    }
+    .logout-btn {
+      background: #d73a49;
+      color: #fff;
+      border: none;
+      padding: 5px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: bold;
+      transition: 0.3s;
+    }
+    .logout-btn:hover {
+      background: #b02636;
+    }
+    .chat-box {
+      flex: 1;
+      overflow-y: auto;
+      padding-right: 10px;
+      white-space: pre-wrap;
+    }
+    .message {
+      margin: 10px 0;
+      padding: 12px;
+      border-radius: 8px;
+      max-width: 75%;
+      word-wrap: break-word;
+    }
+    .user {
+      background: #238636;
+      align-self: flex-end;
+    }
+    .bot {
+      background: #30363d;
+      align-self: flex-start;
+    }
+    .input-container {
+      display: flex;
+      align-items: center;
+      margin-top: 15px;
+      position: relative;
+    }
+    #user-input {
+      flex: 1;
+      padding-right: 50px;
+    }
+    .btn-mic {
+      position: absolute;
+      right: 10px;
+      border: none;
+      background: #6f42c1;
+      color: white;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: 0.3s;
+    }
+    .btn-mic:hover {
+      background: #5a32a3;
+      cursor: pointer;
+    }
+    .btn-mic.listening {
+      background: red;
+      box-shadow: 0 0 10px red, 0 0 20px red;
+      animation: pulse 1s infinite;
+    }
+    @keyframes pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.1); }
+      100% { transform: scale(1); }
+    }
+    .typing {
+      font-style: italic;
+      color: #8b949e;
+    }
+  </style>
+</head>
+<body>
+  <div class="chat-container">
+    <!-- Header with title, user name, and logout -->
+    <div class="chat-header">
+      <div>
+        <h1>AI Chatbot</h1>
+        <p>Logged in as: <%= user.name %></p>
+      </div>
+      <form action="/logout" method="get">
+        <button type="submit" class="logout-btn">Logout</button>
+      </form>
+    </div>
+
+    <!-- Chat messages -->
+    <div id="chat-box" class="chat-box">
+      <% history.forEach(c => { %>
+        <% if(c.role === 'user'){ %>
+          <div class="message user"><%= c.content %></div>
+        <% } else { %>
+          <div class="message bot"><%= c.content %></div>
+        <% } %>
+      <% }) %>
+    </div>
+
+    <!-- Input field and mic button -->
+    <div class="input-container">
+      <input type="text" id="user-input" class="form-control" placeholder="Type your message...">
+      <button class="btn btn-mic" id="micBtn" onclick="startVoice()">🎤</button>
+    </div>
+  </div>
+
+  <script>
+    const chatBox = document.getElementById("chat-box");
+    const micBtn = document.getElementById("micBtn");
+
+    async function sendMessage() {
+      const input = document.getElementById("user-input");
+      const userMessage = input.value.trim();
+      if (!userMessage) return;
+
+      addMessage(userMessage, "user");
+      input.value = "";
+
+      const typingIndicator = document.createElement("div");
+      typingIndicator.className = "message bot typing";
+      typingIndicator.innerText = "AI is typing...";
+      chatBox.appendChild(typingIndicator);
+      chatBox.scrollTop = chatBox.scrollHeight;
+
+      try {
+        const res = await fetch("/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ message: userMessage })
+        });
+
+        const data = await res.json();
+        chatBox.removeChild(typingIndicator);
+        typeMessage(data.reply, "bot");
+
+      } catch (err) {
+        chatBox.removeChild(typingIndicator);
+        addMessage("⚠️ Error connecting to AI.", "bot");
+      }
+    }
+
+    function addMessage(content, sender) {
+      const msg = document.createElement("div");
+      msg.className = "message " + sender;
+      msg.textContent = content;
+      chatBox.appendChild(msg);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function typeMessage(content, sender) {
+      const msg = document.createElement("div");
+      msg.className = "message " + sender;
+      chatBox.appendChild(msg);
+
+      let i = 0;
+      function typing() {
+        if (i < content.length) {
+          msg.textContent += content[i];
+          i++;
+          chatBox.scrollTop = chatBox.scrollHeight;
+          setTimeout(typing, 15);
+        }
+      }
+      typing();
+    }
+
+    // 🎤 Voice Input
+    function startVoice() {
+      const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
+      recognition.lang = "en-US";
+
+      recognition.start();
+      micBtn.classList.add("listening");
+
+      recognition.onresult = (event) => {
+        const voiceText = event.results[0][0].transcript;
+        document.getElementById("user-input").value = voiceText;
+        sendMessage();
+      };
+
+      recognition.onend = () => {
+        micBtn.classList.remove("listening");
+      };
+
+      recognition.onerror = (event) => {
+        micBtn.classList.remove("listening");
+        addMessage("⚠️ Voice recognition error: " + event.error, "bot");
+      };
+    }
+
+    // Press Enter to send
+    document.getElementById("user-input").addEventListener("keypress", function(e) {
+      if (e.key === "Enter") sendMessage();
+    });
+  </script>
+</body>
+</html>

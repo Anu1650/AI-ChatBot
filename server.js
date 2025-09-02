@@ -16,7 +16,6 @@ const port = process.env.PORT || 3000;
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.static("public"));
-app.set("view engine", "ejs");
 app.use(
   session({
     secret: process.env.SESSION_SECRET || "supersecretkey",
@@ -26,9 +25,7 @@ app.use(
 );
 
 // --- OpenAI client ---
-const openaiApiKey = process.env.OPENAI_API_KEY;
-if (!openaiApiKey) console.warn("⚠️  OPENAI_API_KEY is missing in .env");
-const client = new OpenAI({ apiKey: openaiApiKey });
+const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // --- Database folders ---
 const usersFolder = path.join("./database/users");
@@ -59,45 +56,45 @@ const saveChats = (email, history) => {
 // --- Middleware: Admin check ---
 const isAdmin = (req, res, next) => {
   if (req.session.userEmail === process.env.ADMIN_EMAIL) return next();
-  res.redirect("/");
+  res.status(403).send("Access denied. Admins only.");
 };
 
 // --- Routes ---
-// Login/Register page
-app.get("/", (req, res) => res.render("login", { error: null }));
+// Simple JSON login/register pages since no views
+app.get("/", (req, res) => res.send({ message: "Use POST /login or /register with email & password" }));
 
 // Login handler
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
   const user = loadUser(email);
-  if (!user) return res.render("login", { error: "Email not found! Please register." });
+  if (!user) return res.status(404).send({ error: "Email not found! Please register." });
 
   const match = await bcrypt.compare(password, user.password);
-  if (!match) return res.render("login", { error: "Incorrect password!" });
+  if (!match) return res.status(401).send({ error: "Incorrect password!" });
 
   req.session.userEmail = email;
-  res.redirect(email === process.env.ADMIN_EMAIL ? "/admin/dashboard" : "/chat");
+  res.send({ message: `Login successful as ${email}`, redirect: email === process.env.ADMIN_EMAIL ? "/admin/dashboard" : "/chat" });
 });
 
 // Register handler
 app.post("/register", async (req, res) => {
   const { name, email, password } = req.body;
-  if (loadUser(email)) return res.render("login", { error: "Email already exists!" });
+  if (loadUser(email)) return res.status(400).send({ error: "Email already exists!" });
 
   const hashedPassword = await bcrypt.hash(password, 10);
   saveUser({ name, email, password: hashedPassword });
-  saveChats(email, []); // Initialize empty chat history
-
+  saveChats(email, []);
   req.session.userEmail = email;
-  res.redirect("/chat");
+
+  res.send({ message: `Registered successfully as ${email}`, redirect: "/chat" });
 });
 
-// Chat page
+// Chat page (JSON)
 app.get("/chat", (req, res) => {
-  if (!req.session.userEmail) return res.redirect("/");
+  if (!req.session.userEmail) return res.status(401).send({ error: "Not logged in" });
   const user = loadUser(req.session.userEmail);
   const history = loadChats(user.email);
-  res.render("chat", { user, history, message: `Welcome back, ${user.name}!` });
+  res.send({ message: `Welcome back, ${user.name}!`, history });
 });
 
 // Handle chat messages
@@ -105,14 +102,14 @@ app.post("/chat", async (req, res) => {
   try {
     const { message } = req.body;
     const email = req.session.userEmail;
-    if (!email) return res.status(400).send("User not logged in");
+    if (!email) return res.status(401).send({ error: "User not logged in" });
 
     const user = loadUser(email);
     const history = loadChats(email);
 
     const systemMessage = {
       role: "system",
-      content: `You are chatting with ${user.name} (${user.email}). Remember all previous chats and respond contextually.`,
+      content: `You are chatting with ${user.name} (${user.email}). Remember previous chats and respond contextually.`,
     };
 
     const response = await client.chat.completions.create({
@@ -125,52 +122,53 @@ app.post("/chat", async (req, res) => {
     history.push({ role: "assistant", content: reply });
     saveChats(email, history);
 
-    res.json({ reply, history });
+    res.send({ reply, history });
   } catch (err) {
     console.error(err);
-    res.status(500).send("Error with OpenAI API");
+    res.status(500).send({ error: "Error with OpenAI API" });
   }
 });
 
 // Logout
 app.get("/logout", (req, res) => {
   req.session.destroy();
-  res.redirect("/");
+  res.send({ message: "Logged out successfully" });
 });
 
 // --- Admin routes ---
-// Admin dashboard
 app.get("/admin/dashboard", isAdmin, (req, res) => {
   const users = fs.readdirSync(usersFolder).map((f) => {
     const u = loadUser(f.replace(".json", ""));
     return { name: u.name, email: u.email };
   });
-  res.render("admin_dashboard", { users, adminEmail: req.session.userEmail });
+  res.send({ admin: req.session.userEmail, users });
 });
 
-// Admin user chats
+// View user chats
 app.get("/admin/user/:email", isAdmin, (req, res) => {
   const userEmail = req.params.email;
   const user = loadUser(userEmail);
-  if (!user) return res.send("User not found");
-  res.render("admin_user_chats", { user, history: loadChats(userEmail) });
+  if (!user) return res.status(404).send({ error: "User not found" });
+  res.send({ user, history: loadChats(userEmail) });
 });
 
-// Admin delete chats
+// Delete user chats
 app.post("/admin/user/:email/delete-chats", isAdmin, (req, res) => {
   saveChats(req.params.email, []);
-  res.redirect(`/admin/user/${req.params.email}`);
+  res.send({ message: `Deleted chats for ${req.params.email}` });
 });
 
-// Admin delete user
+// Delete user account
 app.post("/admin/user/:email/delete-user", isAdmin, (req, res) => {
-  const userFile = path.join(usersFolder, `${req.params.email}.json`);
-  const chatFile = path.join(chatsFolder, `${req.params.email}.json`);
-  [userFile, chatFile].forEach((f) => fs.existsSync(f) && fs.unlinkSync(f));
-  res.redirect("/admin/dashboard");
+  const files = [
+    path.join(usersFolder, `${req.params.email}.json`),
+    path.join(chatsFolder, `${req.params.email}.json`),
+  ];
+  files.forEach((f) => fs.existsSync(f) && fs.unlinkSync(f));
+  res.send({ message: `Deleted user ${req.params.email}` });
 });
 
-// Admin OTP password change
+// Admin OTP flow
 app.post("/admin/send-otp", isAdmin, async (req, res) => {
   const otp = Math.floor(100000 + Math.random() * 900000);
   req.session.adminOTP = otp;
@@ -187,10 +185,8 @@ app.post("/admin/send-otp", isAdmin, async (req, res) => {
     text: `Your OTP is: ${otp}`,
   });
 
-  res.redirect("/admin/change-password");
+  res.send({ message: "OTP sent to admin email" });
 });
-
-app.get("/admin/change-password", isAdmin, (req, res) => res.render("admin_change_password"));
 
 app.post("/admin/verify-otp", isAdmin, async (req, res) => {
   const { otp, newPassword } = req.body;
@@ -199,9 +195,9 @@ app.post("/admin/verify-otp", isAdmin, async (req, res) => {
     adminUser.password = await bcrypt.hash(newPassword, 10);
     saveUser(adminUser);
     req.session.adminOTP = null;
-    res.send("Password changed successfully!");
+    res.send({ message: "Admin password changed successfully!" });
   } else {
-    res.send("Invalid OTP. Try again.");
+    res.status(400).send({ error: "Invalid OTP" });
   }
 });
 
